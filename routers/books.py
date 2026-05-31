@@ -1,14 +1,17 @@
 # FUNCTIONS FOR GET, POST, UPDATE, DELETE
 
-from database.database_models import Users, Books, CreateBook # import database models
-from typing import Annotated
+from database.database_models import Books, CreateBook # import database models
+from typing import Annotated, Optional
 from sqlalchemy.orm import Session
 from database.database_engine import SessionLocal
-from fastapi import APIRouter, Depends, HTTPException, status, Path
+from fastapi import APIRouter, Depends, HTTPException, status, Path, Query
 from .auth import get_current_user
 
 # initialize fastapi routers
-router = APIRouter()
+router = APIRouter(
+    prefix="/books",
+    tags=["books"]
+)
 
 # function to call database object
 def get_db(): 
@@ -30,26 +33,44 @@ user_dependency = Annotated[dict, Depends(get_current_user)]
 # create fastapi endpoint to fetch all books
 # call FastAPI() via router
 @router.get('/')
-# create function to read_all from database imported from database engine
-async def read_all(db: db_dependency): # database object is stored in db_dependency
-    return db.query(Books).all() # class Books called from models.py 
+# create function to read_all from database imported from database engine; database object is stored in db_dependency
+async def read_all(
+    db: db_dependency,
+    title: Optional[str] = Query(default=None, description="Search books by title"),
+    author: Optional[str] = Query(default=None, description="Search books by author"),
+    skip: int = Query(default=0, ge=0, description="Number of records to skip"),
+    limit: int = Query(default=10, ge=1, le=100, description="Maximum number of records to return")
+                   ): 
+    query = db.query(Books)
 
-# endpoint to fetch book by ID
-@router.get('/book/{book_id}')
-# read_by_id function:
-async def read_by_id(db: db_dependency, book_id: int): # typing
+    if title:
+        query = query.filter(Books.title.ilike(f"%{title}%"))
 
-    # get first match of Books.id
-    book_model = db.query(Books)
-    book_model.filter(Books.id == book_id).first() 
+    if author:
+        query = query.filter(Books.author.ilike(f"%{author}%"))
 
-    # error handling to accept null value
-    if book_model is not None: 
-        return book_model # else
-    raise HTTPException(status_code=404, detail="Book not found, try again") # True if book_model is null
+    books = query.offset(skip).limit(limit).all()
+
+    return books
+
+# endpoint to fetch one book by ID
+@router.get("/{book_id}")
+async def read_by_id(
+    db: db_dependency,
+    book_id: int = Path(gt=0)
+):
+    book_model = db.query(Books).filter(Books.id == book_id).first()
+
+    if book_model is not None:
+        return book_model
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="Book not found"
+    )
 
 # endpoint to create new book:
-@router.post('/create', status_code=status.HTTP_201_CREATED)
+@router.post("/", status_code=status.HTTP_201_CREATED)
 # create_book function:
 async def create_book(user: user_dependency, db: db_dependency, book_created: CreateBook):
 
@@ -69,37 +90,50 @@ async def create_book(user: user_dependency, db: db_dependency, book_created: Cr
     db.commit()
     # executes the transaction and write it to the database
     # without commit(), the transaction stays in short memory
+    db.refresh(book_model)
+    return book_model
 
 # endpoint to update existing books 
-@router.put('/book/{book_id}', status_code=status.HTTP_204_NO_CONTENT)
-async def update_book(db: db_dependency, 
-                      book_id: int, 
-                      book_created: CreateBook):
-    
-    # get first match of Books.id
+@router.put('/{book_id}', status_code=status.HTTP_204_NO_CONTENT)
+async def update_book(
+    user: user_dependency,
+    db: db_dependency,
+    book_created: CreateBook,
+    book_id: int = Path(gt=0)
+):
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, 
+                            detail='Authentication Failed')
+
     book_model = db.query(Books).filter(Books.id == book_id).first()
 
-    # error handling to accept null value
     if book_model is None: 
-        raise HTTPException(status_code=404, detail="Book not found, try again")
+        raise HTTPException(status_code=404, 
+                            detail="Book not found, try again")
     
-    book_model.title = book_created.title # type: ignore
-    book_model.description = book_created.description # type: ignore
-    book_model.rating = book_created.rating # type: ignore
+    book_model.title = book_created.title
+    book_model.author = book_created.author
+    book_model.description = book_created.description
+
     db.add(book_model)
     db.commit()
 
 # endpoint to delete book
-@router.delete('/book/{book_id}')
-async def delete_book(db: db_dependency, 
-                      book_id: int = Path(gt=0)):
-    
-    # get first match of Books.id
+@router.delete('/{book_id}', status_code=status.HTTP_204_NO_CONTENT)
+async def delete_book(
+    user: user_dependency,
+    db: db_dependency, 
+    book_id: int = Path(gt=0)
+):
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, 
+                            detail='Authentication Failed')
+
     book_model = db.query(Books).filter(Books.id == book_id).first()
 
-    # error handling to accept null value
     if book_model is None: 
-        raise HTTPException(status_code=404, detail="Book not found, try again")
+        raise HTTPException(status_code=404, 
+                            detail="Book not found, try again")
     
-    db.query(Books).filter(Books.id == book_id).delete()
+    db.delete(book_model)
     db.commit()
